@@ -1,0 +1,78 @@
+service: cardioai-backend
+frameworkVersion: "3"
+
+provider:
+  name: aws
+  runtime: python3.11
+  region: us-east-1
+  memorySize: 1024        # ECG signal processing needs memory
+  timeout: 29             # API Gateway max
+  environment:
+    SECRET_KEY: ${env:SECRET_KEY}
+    DYNAMODB_TABLE_PATIENTS: ${self:service}-patients-${sls:stage}
+    DYNAMODB_TABLE_ECG: ${self:service}-ecg-${sls:stage}
+    S3_BUCKET_ECG: ${self:service}-ecg-files-${sls:stage}
+  iam:
+    role:
+      statements:
+        - Effect: Allow
+          Action: [dynamodb:GetItem, dynamodb:PutItem, dynamodb:Query, dynamodb:Scan, dynamodb:UpdateItem, dynamodb:DeleteItem]
+          Resource: arn:aws:dynamodb:${aws:region}:*:table/${self:service}-*
+        - Effect: Allow
+          Action: [s3:GetObject, s3:PutObject, s3:DeleteObject]
+          Resource: arn:aws:s3:::${self:service}-*/*
+
+functions:
+  api:
+    handler: handler.handler
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
+
+plugins:
+  - serverless-python-requirements
+
+custom:
+  pythonRequirements:
+    dockerizePip: non-linux
+    slim: true
+    noDeploy: [boto3, botocore]   # already on Lambda
+
+resources:
+  Resources:
+    PatientsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-patients-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: id, AttributeType: S}
+        KeySchema:
+          - {AttributeName: id, KeyType: HASH}
+
+    ECGTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        TableName: ${self:service}-ecg-${sls:stage}
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - {AttributeName: id, AttributeType: S}
+          - {AttributeName: patient_id, AttributeType: S}
+        KeySchema:
+          - {AttributeName: id, KeyType: HASH}
+        GlobalSecondaryIndexes:
+          - IndexName: patient-index
+            KeySchema:
+              - {AttributeName: patient_id, KeyType: HASH}
+            Projection: {ProjectionType: ALL}
+
+    ECGBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        BucketName: ${self:service}-ecg-files-${sls:stage}
+        VersioningConfiguration:
+          Status: Enabled
